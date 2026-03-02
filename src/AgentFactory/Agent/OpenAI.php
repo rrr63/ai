@@ -113,4 +113,60 @@ class OpenAI implements AgentInterface
 
         return new MessageBag(...$messages);
     }
+
+    /**
+     * Execute with tools support (function calling)
+     *
+     * @param \Doppar\AI\Tool\ToolCollection $tools
+     * @param array<string, mixed> $params
+     * @return mixed
+     */
+    public function executeWithTools(\Doppar\AI\Tool\ToolCollection $tools, array $params): mixed
+    {
+        $formattedTools = [];
+        foreach ($tools->all() as $tool) {
+            $formattedTools[] = $this->formatToolForOpenAI($tool);
+        }
+
+        $params['tools'] = $formattedTools;
+        $params['tool_choice'] = 'auto';
+
+        $result = $this->platform->invoke($this->model, $this->messages, $params);
+
+        return $result->asText();
+    }
+
+    /**
+     * Format a tool for OpenAI function calling
+     *
+     * @param \Doppar\AI\Tool\ToolInterface $tool
+     * @return array
+     */
+    private function formatToolForOpenAI(\Doppar\AI\Tool\ToolInterface $tool): array
+    {
+        $parameters = $tool->getParameters();
+        $properties = [];
+        $required = [];
+
+        foreach ($parameters as $param) {
+            $properties[$param->name] = $param->toOpenAIFormat();
+            
+            if ($param->required) {
+                $required[] = $param->name;
+            }
+        }
+
+        return [
+            'type' => 'function',
+            'function' => [
+                'name' => $tool->getName(),
+                'description' => $tool->getDescription(),
+                'parameters' => [
+                    'type' => 'object',
+                    'properties' => $properties,
+                    'required' => $required,
+                ],
+            ],
+        ];
+    }
 }

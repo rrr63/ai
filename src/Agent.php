@@ -64,6 +64,20 @@ class Agent
     protected ?StoreInterface $store = null;
 
     /**
+     * Collection of registered tools
+     *
+     * @var \Doppar\AI\Tool\ToolCollection|null
+     */
+    protected ?\Doppar\AI\Tool\ToolCollection $tools = null;
+
+    /**
+     * Tool executor instance
+     *
+     * @var \Doppar\AI\Tool\ToolExecutor|null
+     */
+    protected ?\Doppar\AI\Tool\ToolExecutor $toolExecutor = null;
+
+    /**
      * Create a new Agent instance
      *
      * @param class-string<AgentInterface> $agentClass
@@ -426,5 +440,160 @@ class Agent
         }
 
         return $results;
+    }
+
+    /**
+     * Register a tool (closure or instance)
+     *
+     * @param string|ToolInterface $nameOrTool
+     * @param string|null $description
+     * @param array|null $parameters
+     * @param \Closure|null $handler
+     * @return self
+     */
+    public function registerTool(
+        string|\Doppar\AI\Tool\ToolInterface $nameOrTool,
+        ?string $description = null,
+        ?array $parameters = null,
+        ?\Closure $handler = null
+    ): self {
+        if ($this->tools === null) {
+            $this->tools = new \Doppar\AI\Tool\ToolCollection();
+        }
+
+        if ($nameOrTool instanceof \Doppar\AI\Tool\ToolInterface) {
+            $this->tools->add($nameOrTool);
+        } else {
+            $tool = new class($nameOrTool, $description, $parameters, $handler) extends \Doppar\AI\Tool\Tool {
+                public function __construct(
+                    string $name,
+                    ?string $description,
+                    ?array $parameters,
+                    private ?\Closure $handler
+                ) {
+                    $this->name = $name;
+                    $this->description = $description ?? '';
+                    parent::__construct();
+                }
+
+                protected function defineParameters(): array
+                {
+                    return [];
+                }
+
+                protected function doExecute(array $arguments): mixed
+                {
+                    if ($this->handler === null) {
+                        throw new \RuntimeException('No handler defined for tool');
+                    }
+                    return ($this->handler)(...array_values($arguments));
+                }
+
+                public function getParameters(): array
+                {
+                    return func_get_arg(0) ?? [];
+                }
+            };
+
+            $this->tools->add($tool);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Register multiple tools
+     *
+     * @param array<ToolInterface> $tools
+     * @return self
+     */
+    public function registerTools(array $tools): self
+    {
+        foreach ($tools as $tool) {
+            $this->registerTool($tool);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Use tools from the registry by name
+     *
+     * @param array<string> $toolNames
+     * @return self
+     */
+    public function useTools(array $toolNames): self
+    {
+        if ($this->tools === null) {
+            $this->tools = new \Doppar\AI\Tool\ToolCollection();
+        }
+
+        foreach ($toolNames as $name) {
+            $tool = \Doppar\AI\Tool\ToolRegistry::get($name);
+            $this->tools->add($tool);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Execute with tools (auto-execution mode)
+     *
+     * @return mixed
+     */
+    public function executeWithTools(): mixed
+    {
+        if ($this->tools === null || $this->tools->count() === 0) {
+            return $this->execute();
+        }
+
+        $agentInstance = $this->agentClass::create(
+            key: $this->key,
+            model: $this->model,
+            config: ['host' => $this->host]
+        );
+
+        if (method_exists($agentInstance, 'executeWithTools')) {
+            return $agentInstance
+                ->setMessage($this->messages)
+                ->executeWithTools($this->tools, $this->params);
+        }
+
+        return $this->execute();
+    }
+
+    /**
+     * Execute a specific tool
+     *
+     * @param string $toolName
+     * @param array $arguments
+     * @return \Doppar\AI\Tool\ToolResult
+     */
+    public function executeTool(string $toolName, array $arguments): \Doppar\AI\Tool\ToolResult
+    {
+        if ($this->tools === null) {
+            throw new \RuntimeException('No tools registered');
+        }
+
+        $tool = $this->tools->get($toolName);
+        if ($tool === null) {
+            throw new \RuntimeException("Tool not found: {$toolName}");
+        }
+
+        if ($this->toolExecutor === null) {
+            $this->toolExecutor = new \Doppar\AI\Tool\ToolExecutor();
+        }
+
+        return $this->toolExecutor->execute($tool, $arguments);
+    }
+
+    /**
+     * Get registered tools
+     *
+     * @return \Doppar\AI\Tool\ToolCollection|null
+     */
+    public function getTools(): ?\Doppar\AI\Tool\ToolCollection
+    {
+        return $this->tools;
     }
 }

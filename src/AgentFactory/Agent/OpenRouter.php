@@ -113,4 +113,100 @@ class OpenRouter implements AgentInterface
 
         return new MessageBag(...$messages);
     }
+
+    /**
+     * Execute with tools support (function calling)
+     * OpenRouter uses the same format as OpenAI
+     *
+     * @param \Doppar\AI\Tool\ToolCollection $tools
+     * @param array<string, mixed> $params
+     * @return mixed
+     */
+    public function executeWithTools(\Doppar\AI\Tool\ToolCollection $tools, array $params): mixed
+    {
+        $formattedTools = [];
+        foreach ($tools->all() as $tool) {
+            $formattedTools[] = $this->formatToolForOpenRouter($tool);
+        }
+
+        $params['tools'] = $formattedTools;
+        $params['tool_choice'] = 'auto';
+
+        $result = $this->platform->invoke($this->model, $this->messages, $params);
+
+        // Check if we got tool calls
+        try {
+            $toolCalls = $result->asToolCalls();
+            
+            // Execute each tool call
+            $executor = new \Doppar\AI\Tool\ToolExecutor();
+            $toolResultsText = [];
+            
+            foreach ($toolCalls as $toolCall) {
+                $toolName = $toolCall->getName();
+                $arguments = $toolCall->getArguments();
+                
+                $tool = $tools->get($toolName);
+                if ($tool) {
+                    $toolResult = $executor->execute($tool, $arguments);
+                    $toolResultsText[] = "Tool '{$toolName}' result: " . json_encode($toolResult->data);
+                }
+            }
+            
+            // Add tool results as a user message and call again
+            $messages = $this->messages->getMessages();
+            $messages[] = Message::ofUser(
+                "Tool execution results:\n" . implode("\n", $toolResultsText) . 
+                "\n\nPlease provide a natural language response based on these results."
+            );
+            
+            $newMessageBag = new MessageBag(...$messages);
+            
+            // Remove tools from params for the second call
+            unset($params['tools']);
+            unset($params['tool_choice']);
+            
+            $finalResult = $this->platform->invoke($this->model, $newMessageBag, $params);
+            
+            return $finalResult->asText();
+        } catch (\Exception $e) {
+            // If no tool calls, return as text
+            return $result->asText();
+        }
+    }
+
+    /**
+     * Format a tool for OpenRouter function calling
+     * OpenRouter uses OpenAI-compatible format
+     *
+     * @param \Doppar\AI\Tool\ToolInterface $tool
+     * @return array
+     */
+    private function formatToolForOpenRouter(\Doppar\AI\Tool\ToolInterface $tool): array
+    {
+        $parameters = $tool->getParameters();
+        $properties = [];
+        $required = [];
+
+        foreach ($parameters as $param) {
+            $properties[$param->name] = $param->toOpenAIFormat();
+            
+            if ($param->required) {
+                $required[] = $param->name;
+            }
+        }
+
+        return [
+            'type' => 'function',
+            'function' => [
+                'name' => $tool->getName(),
+                'description' => $tool->getDescription(),
+                'parameters' => [
+                    'type' => 'object',
+                    'properties' => $properties,
+                    'required' => $required,
+                ],
+            ],
+        ];
+    }
 }
